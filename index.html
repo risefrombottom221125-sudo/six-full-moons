@@ -11,6 +11,11 @@
     <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
     <!-- Babel untuk menerjemahkan JSX -->
     <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    
+    <!-- Firebase SDK (Versi Compat untuk Single File HTML) -->
+    <script src="https://www.gstatic.com/firebasejs/10.5.0/firebase-app-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/10.5.0/firebase-firestore-compat.js"></script>
+
     <!-- Font Lora untuk estetika puisi klasik -->
     <link href="https://fonts.googleapis.com/css2?family=Lora:ital,wght@0,400;0,500;0,600;1,400;1,500&display=swap" rel="stylesheet">
     
@@ -99,7 +104,21 @@
     <div id="root"></div>
 
     <script type="text/babel">
-        const { useState } = React;
+        // --- KONFIGURASI FIREBASE ---
+        const firebaseConfig = {
+            apiKey: "AIzaSyA01WZXTncUbf1SPhkg40VvME_99PbGhLA",
+            authDomain: "enam--purnama.firebaseapp.com",
+            projectId: "enam--purnama",
+            storageBucket: "enam--purnama.firebasestorage.app",
+            messagingSenderId: "448620493821",
+            appId: "1:448620493821:web:98ee9f04ec0d26814d7794"
+        };
+        // Inisialisasi Firebase
+        firebase.initializeApp(firebaseConfig);
+        const db = firebase.firestore();
+        // -----------------------------
+
+        const { useState, useEffect, Fragment } = React;
 
         const BookIcon = () => <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"></path><path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"></path></svg>;
         const PenIcon = () => <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 19l7-7 3 3-7 7-3-3z"></path><path d="M18 13l-1.5-7.5L2 2l3.5 14.5L13 18l5-5z"></path><path d="M2 2l7.58 7.58"></path></svg>;
@@ -115,20 +134,16 @@
             const [animClass, setAnimClass] = useState('');
             const [contentState, setContentState] = useState('fade-in');
             
-            const [introContent, setIntroContent] = useState('Selamat datang di Enam Purnama.\n\nBuku catatan ini adalah kumpulan sajak yang ditulis dengan segenap rasa, didedikasikan khusus untuk satu orang pembaca yang selalu menjadi inspirasi di setiap barisnya.\n\nSilakan buka lembaran berikutnya untuk membaca.');
-
-            const [poems, setPoems] = useState([
-                {
-                    id: 1,
-                    title: 'Pertemuan Pertama',
-                    author: 'Marchel',
-                    date: '31 Oktober 2026',
-                    content: 'Tulis bait-baitmu di sini...\n\nSetiap baris akan mengikuti garis kertas ini secara otomatis.',
-                    notes: []
-                }
-            ]);
+            // Data Firebase State
+            const [introContent, setIntroContent] = useState('Memuat pendahuluan...');
+            const [poems, setPoems] = useState([]);
             
-            const [activePoemId, setActivePoemId] = useState(1);
+            // Mode Draft untuk Penulis
+            const [draftIntro, setDraftIntro] = useState('');
+            const [draftTitle, setDraftTitle] = useState('');
+            const [draftContent, setDraftContent] = useState('');
+
+            const [activePoemId, setActivePoemId] = useState(null);
             const [newNote, setNewNote] = useState('');
             const [password, setPassword] = useState('');
             const [loginError, setLoginError] = useState('');
@@ -138,6 +153,36 @@
 
             const fallbackPoem = { id: 0, title: '', author: '', date: '', content: '', notes: [] };
             const activePoem = poems.find(p => p.id === activePoemId) || poems[0] || fallbackPoem;
+
+            // Efek untuk memuat data dari Firestore secara real-time
+            useEffect(() => {
+                // 1. Memuat Pendahuluan
+                const introRef = db.collection('settings').doc('intro');
+                const unsubIntro = introRef.onSnapshot(doc => {
+                    if (doc.exists) {
+                        setIntroContent(doc.data().content);
+                    } else {
+                        // Jika baru pertama kali dibuat, set teks bawaan
+                        const defaultIntro = 'Selamat datang di Enam Purnama.\n\nBuku catatan ini adalah kumpulan sajak yang ditulis dengan segenap rasa, didedikasikan khusus untuk satu orang pembaca yang selalu menjadi inspirasi di setiap barisnya.\n\nSilakan buka lembaran berikutnya untuk membaca.';
+                        introRef.set({ content: defaultIntro });
+                        setIntroContent(defaultIntro);
+                    }
+                });
+
+                // 2. Memuat Daftar Puisi
+                const unsubPoems = db.collection('poems').orderBy('createdAt', 'asc').onSnapshot(snapshot => {
+                    const loadedPoems = snapshot.docs.map(doc => ({
+                        id: doc.id,
+                        ...doc.data()
+                    }));
+                    setPoems(loadedPoems);
+                });
+
+                return () => {
+                    unsubIntro();
+                    unsubPoems();
+                };
+            }, []);
 
             const navigateTo = (view, direction = 'forward') => {
                 setContentState('fade-out');
@@ -162,61 +207,71 @@
                 }
             };
 
-            const handleAddNote = (e) => {
+            // ---- FUNGSI DATABASE FIREBASE ----
+
+            const saveIntroAndExit = async () => {
+                await db.collection('settings').doc('intro').update({ content: draftIntro });
+                navigateTo('writer-toc', 'backward');
+            };
+
+            const savePoemAndExit = async () => {
+                if (activePoemId) {
+                    await db.collection('poems').doc(activePoemId).update({
+                        title: draftTitle,
+                        content: draftContent
+                    });
+                }
+                navigateTo('writer-toc', 'backward');
+            };
+
+            const addNewPoem = async () => {
+                const today = new Date().toLocaleDateString('id-ID', {day: 'numeric', month: 'long', year: 'numeric'});
+                const docRef = await db.collection('poems').add({
+                    title: 'Puisi Baru',
+                    author: 'Marchel',
+                    date: today,
+                    content: '',
+                    notes: [],
+                    createdAt: firebase.firestore.FieldValue.serverTimestamp()
+                });
+                
+                setActivePoemId(docRef.id);
+                setDraftTitle('Puisi Baru');
+                setDraftContent('');
+                navigateTo('writer', 'forward');
+            };
+
+            const handleDeletePoem = async (e, id) => {
+                e.stopPropagation();
+                if (window.confirm('Apakah Anda yakin ingin menghapus karya ini secara permanen?')) {
+                    await db.collection('poems').doc(id).delete();
+                }
+            };
+
+            const handleAddNote = async (e) => {
                 e.preventDefault();
                 if (newNote.trim() && activePoem.id !== 0) {
-                    setPoems(poems.map(p => 
-                        p.id === activePoemId 
-                        ? { ...p, notes: [...p.notes, newNote] } 
-                        : p
-                    ));
+                    await db.collection('poems').doc(activePoem.id).update({
+                        notes: firebase.firestore.FieldValue.arrayUnion(newNote)
+                    });
                     setNewNote('');
                 }
             };
 
-            const handleSaveEdit = (idx) => {
+            const handleSaveEditNote = async (idx) => {
                 if (editNoteText.trim() && activePoem.id !== 0) {
                     const updatedNotes = [...activePoem.notes];
                     updatedNotes[idx] = editNoteText;
                     
-                    setPoems(poems.map(p => 
-                        p.id === activePoemId 
-                        ? { ...p, notes: updatedNotes } 
-                        : p
-                    ));
+                    await db.collection('poems').doc(activePoem.id).update({
+                        notes: updatedNotes
+                    });
                     setEditingNoteIdx(null);
                     setEditNoteText('');
                 }
             };
 
-            const updateActivePoem = (field, value) => {
-                if (activePoem.id !== 0) {
-                    setPoems(poems.map(p => p.id === activePoemId ? { ...p, [field]: value } : p));
-                }
-            };
-
-            const addNewPoem = () => {
-                const newId = poems.length > 0 ? Math.max(...poems.map(p => p.id)) + 1 : 1;
-                const today = new Date().toLocaleDateString('id-ID', {day: 'numeric', month: 'long', year: 'numeric'});
-                const newPoemData = {
-                    id: newId,
-                    title: 'Puisi Baru',
-                    author: 'Marchel',
-                    date: today,
-                    content: '',
-                    notes: []
-                };
-                setPoems([...poems, newPoemData]);
-                setActivePoemId(newId);
-                navigateTo('writer', 'forward');
-            };
-
-            const handleDeletePoem = (e, id) => {
-                e.stopPropagation();
-                if (window.confirm('Apakah Anda yakin ingin menghapus karya ini secara permanen?')) {
-                    setPoems(poems.filter(p => p.id !== id));
-                }
-            };
+            // ---- KOMPONEN UI ----
 
             const renderHome = () => (
                 <div className="flex flex-col items-center justify-center h-full text-center mt-20">
@@ -281,7 +336,7 @@
             const renderWriterIntro = () => (
                 <div className="flex flex-col h-full">
                     <div className="flex justify-between items-center mb-8 pb-4 border-b border-gray-400/30">
-                        <button onClick={() => navigateTo('writer-toc', 'backward')} className="flex gap-2 items-center text-gray-500 hover:text-gray-800">
+                        <button onClick={saveIntroAndExit} className="flex gap-2 items-center text-gray-500 hover:text-gray-800">
                             <ArrowLeftIcon /> Simpan & Kembali
                         </button>
                         <span className="text-gray-400 italic">Edit Pendahuluan</span>
@@ -289,8 +344,8 @@
                     
                     <h2 className="text-3xl font-semibold text-gray-800 mb-8">Prakata</h2>
                     <textarea 
-                        value={introContent} 
-                        onChange={(e) => setIntroContent(e.target.value)}
+                        value={draftIntro} 
+                        onChange={(e) => setDraftIntro(e.target.value)}
                         className="flex-grow text-gray-700 focus:outline-none bg-transparent" 
                         rows="15"
                     />
@@ -310,7 +365,7 @@
                         <h2 className="text-3xl font-semibold text-gray-800">{isWriter ? 'Karya Saya' : 'Daftar Isi'}</h2>
                         {isWriter && (
                             <div className="flex gap-2">
-                                <button onClick={() => navigateTo('writer-intro', 'forward')} className="flex items-center gap-1 text-sm border border-gray-800 text-gray-800 px-3 py-1.5 rounded hover:bg-gray-800/10">
+                                <button onClick={() => { setDraftIntro(introContent); navigateTo('writer-intro', 'forward'); }} className="flex items-center gap-1 text-sm border border-gray-800 text-gray-800 px-3 py-1.5 rounded hover:bg-gray-800/10">
                                     <EditIcon /> Pendahuluan
                                 </button>
                                 <button onClick={addNewPoem} className="flex items-center gap-1 text-sm bg-gray-800 text-[#FDF6E3] px-3 py-1.5 rounded hover:bg-gray-700">
@@ -324,7 +379,19 @@
                         {poems.length === 0 && <p className="text-gray-500 italic">Belum ada karya yang ditulis.</p>}
                         {poems.map(poem => (
                             <div key={poem.id} className="relative group border-b border-gray-400/30 py-4 hover:bg-black/5 px-2 -mx-2 transition-colors rounded">
-                                <button onClick={() => { setActivePoemId(poem.id); navigateTo(isWriter ? 'writer' : 'reader', 'forward'); }} className="text-left w-full pr-10">
+                                <button 
+                                    onClick={() => { 
+                                        setActivePoemId(poem.id); 
+                                        if(isWriter){
+                                            setDraftTitle(poem.title);
+                                            setDraftContent(poem.content);
+                                            navigateTo('writer', 'forward');
+                                        } else {
+                                            navigateTo('reader', 'forward');
+                                        }
+                                    }} 
+                                    className="text-left w-full pr-10"
+                                >
                                     <h3 className="text-xl font-medium text-gray-800">{poem.title ? poem.title : 'Tanpa Judul'}</h3>
                                     <div className="flex justify-between text-sm text-gray-500 mt-2">
                                         <span>{isWriter ? 'Klik untuk mengedit' : `Oleh: ${poem.author}`}</span>
@@ -349,18 +416,18 @@
             const renderWriter = () => (
                 <div className="flex flex-col h-full">
                     <div className="flex justify-between items-center mb-8 pb-4 border-b border-gray-400/30">
-                        <button onClick={() => navigateTo('writer-toc', 'backward')} className="flex gap-2 items-center text-gray-500 hover:text-gray-800">
+                        <button onClick={savePoemAndExit} className="flex gap-2 items-center text-gray-500 hover:text-gray-800">
                             <ArrowLeftIcon /> Simpan & Kembali
                         </button>
                         <span className="text-gray-400 italic">Mode Mengedit</span>
                     </div>
                     
                     <input 
-                        type="text" value={activePoem.title} onChange={(e) => updateActivePoem('title', e.target.value)}
+                        type="text" value={draftTitle} onChange={(e) => setDraftTitle(e.target.value)}
                         className="text-3xl font-semibold text-gray-800 mb-8 focus:outline-none bg-transparent"
                     />
                     <textarea 
-                        value={activePoem.content} onChange={(e) => updateActivePoem('content', e.target.value)}
+                        value={draftContent} onChange={(e) => setDraftContent(e.target.value)}
                         className="flex-grow text-gray-700 focus:outline-none bg-transparent" rows="15"
                     />
                 </div>
@@ -402,7 +469,7 @@
                                                 />
                                                 <div className="flex justify-end gap-3 mt-1">
                                                     <button onClick={() => setEditingNoteIdx(null)} className="text-xs text-gray-500 hover:text-gray-800 font-medium">Batal</button>
-                                                    <button onClick={() => handleSaveEdit(idx)} className="text-xs bg-gray-800 text-[#FDF6E3] px-3 py-1 rounded hover:bg-gray-700">Simpan</button>
+                                                    <button onClick={() => handleSaveEditNote(idx)} className="text-xs bg-gray-800 text-[#FDF6E3] px-3 py-1 rounded hover:bg-gray-700">Simpan</button>
                                                 </div>
                                             </div>
                                         ) : (
